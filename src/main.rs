@@ -2,14 +2,20 @@ mod cpu;
 
 use cpu::Cpu;
 use minifb::{Key, Window, WindowOptions};
+use rodio::{Sink, source::SineWave, Source};
 use std::env;
 use std::fs;
+use std::time::{Duration, Instant};
 
 const WIDTH: usize = 64;
 const HEIGHT: usize = 32;
 const SCALE: usize = 10;
 
 fn main() {
+
+    let (_stream, _handle, sink) = create_beep();
+    let mut beep_playing = false;
+
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: chip8 <rom>");
@@ -27,21 +33,48 @@ fn main() {
         WindowOptions::default(),
     ).expect("failed to create window");
 
-    window.set_target_fps(60);
+
 
     // framebuffer: minifb wants a Vec<u32> of packed 0xRRGGBB pixels
     let mut fb = vec![0u32; WIDTH * SCALE * HEIGHT * SCALE];
 
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        // run ~8 CPU ticks per frame (500Hz / 60 fps ~= 8)
-        for _ in 0..8 {
-            cpu.tick();
-        }
-        cpu.tick_timers();
 
-        handle_input(&mut cpu, &window);
-        draw(&cpu, &mut fb);
-        window.update_with_buffer(&fb, WIDTH * SCALE, HEIGHT * SCALE).unwrap();
+    const CPU_HZ: u64 = 500;
+    const TIMER_HZ: u64 = 60;
+
+    let cpu_interval = Duration::from_nanos(1_000_000_000 / CPU_HZ);
+    let timer_interval = Duration::from_nanos(1_000_000_000 / TIMER_HZ);
+
+    let mut last_cpu = Instant::now();
+    let mut last_timer = Instant::now();
+
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        
+        if last_cpu.elapsed() >= cpu_interval {
+            cpu.tick();
+            last_cpu = Instant::now();
+        }
+        
+        if last_timer.elapsed() >= timer_interval {
+            cpu.tick_timers();
+
+            if cpu.sound_timer > 0 {
+                if !beep_playing {
+                    sink.append(SineWave::new(440.0).amplify(0.2).repeat_infinite());
+                    beep_playing = true;
+                }
+            }
+            else {
+                sink.clear();
+                beep_playing = false;
+            }
+
+            handle_input(&mut cpu, &window);
+            draw(&cpu, &mut fb);
+            window.update_with_buffer(&fb, WIDTH * SCALE, HEIGHT * SCALE).unwrap();
+            last_timer = Instant::now();
+        }
+        std::thread::sleep(Duration::from_micros(100));
     }
 }
 
@@ -85,4 +118,10 @@ fn draw(cpu: &Cpu, fb: &mut Vec<u32>) {
             }
         }
     }
+}
+
+fn create_beep() -> (rodio::OutputStream, rodio::OutputStreamHandle, rodio::Sink) {
+    let (stream, handle) = rodio::OutputStream::try_default().unwrap();
+    let sink = rodio::Sink::try_new(&handle).unwrap();
+    (stream, handle, sink)
 }

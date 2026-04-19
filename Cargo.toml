@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 minifb = "0.27"   #Simple framebuffer window - easiest to set up
 rand = "0.8"
+rodio = "0.17"
