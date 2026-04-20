@@ -24,6 +24,22 @@ const FONT: [u8; 80] = [
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
+pub struct Quirks {
+    pub shift_vx: bool,   // 8xy6/8xyE shift Vx in place (ignore Vy)
+    pub load_store_i: bool, // Fx55/Fx65 don't modify I
+    pub jump_vx: bool,    // Bxnn jumps to Xnn + Vx instead of nnn + V0
+}
+
+impl Quirks {
+    pub fn chip8() -> Self {
+        Quirks { shift_vx: false, load_store_i: false, jump_vx: false }
+    }
+    pub fn chip48() -> Self {
+        Quirks { shift_vx: true, load_store_i: true, jump_vx: true }
+    }
+}
+
+
 pub struct Cpu {
     // 4KB of RAM. Programs load at 0x200; 0x000–0x1FF reserved for interpreter.
     pub ram: [u8; 4096],
@@ -51,6 +67,8 @@ pub struct Cpu {
 
     // 16-key hex keypad state. keys[0xF] = key F, etc.
     pub keys: [bool; 16],
+
+    pub quirks: Quirks,
 }
 
 impl Cpu {
@@ -66,6 +84,7 @@ impl Cpu {
             sound_timer: 0,
             display: [false; 64 * 32],
             keys: [false; 16],
+            quirks: Quirks::chip8(),
         };
         cpu.ram[FONT_START..FONT_START + FONT.len()].copy_from_slice(&FONT);
         cpu
@@ -129,8 +148,9 @@ impl Cpu {
                         self.v[0xF] = !borrow as u8;
                     }
                     0x6 => {                                          // Vx >>= 1, VF = shifted bit
-                        self.v[0xF] = self.v[x] & 0x1;
-                        self.v[x] >>= 1;
+                        let src = if self.quirks.shift_vx { x } else { y };
+                        self.v[0xF] = self.v[src] & 0x1;
+                        self.v[x] = self.v[src] >> 1;
                     }
                     0x7 => {                                          // Vx = Vy - Vx, VF = NOT borrow
                         let (result, borrow) = self.v[y].overflowing_sub(self.v[x]);
@@ -138,13 +158,20 @@ impl Cpu {
                         self.v[0xF] = !borrow as u8;
                     }
                     0xE => {                                          // Vx <<= 1, VF = shifted bit
-                        self.v[0xF] = (self.v[x] >> 7) & 0x1;
-                        self.v[x] <<= 1;
+                        let src = if self.quirks.shift_vx { x } else { y };
+                        self.v[0xF] = (self.v[src] >> 7) & 0x1;
+                        self.v[x] = self.v[src] << 1;
                     }
                     _ => {}
                 },
             0xA => self.i = nnn,                            // set I = NNN
-            0xB => self.pc = nnn + self.v[0] as u16,        // jump to NNN + V0
+            0xB => {
+                if self.quirks.jump_vx {
+                        self.pc = (nnn & 0x0F00) + self.v[x] as u16;
+                } else {
+                        self.pc = nnn + self.v[0] as u16;
+                    }
+                }      // jump to NNN + V0
             0xC => self.v[x] = rand::random::<u8>() & nn,   // Vx = random & NN
             0xD => {
                 let x_pos = self.v[x] as usize % 64;
@@ -195,11 +222,13 @@ impl Cpu {
                     for idx in 0..=x {
                         self.ram[self.i as usize + idx] = self.v[idx];
                     }
+                    if !self.quirks.load_store_i { self.i += x as u16 + 1; }
                 }
                 0x65 => {                                                  // load V0..Vx from RAM starting at I
                     for idx in 0..=x {
                         self.v[idx] = self.ram[self.i as usize + idx];
                     }
+                    if !self.quirks.load_store_i { self.i += x as u16 + 1; }
                 }
                 _ => {}
             },

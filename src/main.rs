@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 const WIDTH: usize = 64;
 const HEIGHT: usize = 32;
-const SCALE: usize = 10;
+
 
 fn main() {
 
@@ -18,25 +18,41 @@ fn main() {
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: chip8 <rom>");
+        eprintln!("Usage: chip8 <rom> [scale] [fg] [bg]");
+        eprintln!(" scale: integer (default 10)");
+        eprintln!(" fg/bg: hex colour e.g. FFFFFF (default FFFFFF/000000)");
         return;
     }
+
+    let scale = args.get(2)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(10);
+
+    let fg = u32::from_str_radix(args.get(3).map(|s| s.as_str()).unwrap_or("FFFFFF"), 16)
+        .unwrap_or(0xFFFFFF);
+
+    let bg = u32::from_str_radix(args.get(4).map(|s| s.as_str()).unwrap_or("000000"), 16)
+        .unwrap_or(0x000000);
 
     let rom = fs::read(&args[1]).expect("failed to read ROM");
     let mut cpu = Cpu::new();
     cpu.load_rom(&rom);
 
+    if args.iter().any(|a| a == "--chip48") {
+        cpu.quirks = cpu::Quirks::chip48();
+    }
+
     let mut window = Window::new(
         "CHIP-8",
-        WIDTH * SCALE,
-        HEIGHT * SCALE,
+        WIDTH * scale,
+        HEIGHT * scale,
         WindowOptions::default(),
     ).expect("failed to create window");
 
 
 
     // framebuffer: minifb wants a Vec<u32> of packed 0xRRGGBB pixels
-    let mut fb = vec![0u32; WIDTH * SCALE * HEIGHT * SCALE];
+    let mut fb = vec![0u32; WIDTH * scale * HEIGHT * scale];
 
 
     const CPU_HZ: u64 = 500;
@@ -48,9 +64,21 @@ fn main() {
     let mut last_cpu = Instant::now();
     let mut last_timer = Instant::now();
 
+    let mut paused = false;
+
+
+
     while window.is_open() && !window.is_key_down(Key::Escape) {
         
-        if last_cpu.elapsed() >= cpu_interval {
+        if window.is_key_pressed(Key::P, minifb::KeyRepeat::No) {
+            paused = !paused;
+        }
+
+        if paused && window.is_key_pressed(Key::Space, minifb::KeyRepeat::No) {
+            cpu.tick();
+        }
+
+        if !paused && last_cpu.elapsed() >= cpu_interval {
             cpu.tick();
             last_cpu = Instant::now();
         }
@@ -70,8 +98,10 @@ fn main() {
             }
 
             handle_input(&mut cpu, &window);
-            draw(&cpu, &mut fb);
-            window.update_with_buffer(&fb, WIDTH * SCALE, HEIGHT * SCALE).unwrap();
+            draw(&cpu, &mut fb, scale, fg, bg);
+            let title = if paused {"CHIP-8 [PAUSED]"} else { "CHIP-8" };
+            window.set_title(title);
+            window.update_with_buffer(&fb, WIDTH * scale, HEIGHT * scale).unwrap();
             last_timer = Instant::now();
         }
         std::thread::sleep(Duration::from_micros(100));
@@ -103,18 +133,18 @@ fn handle_input(cpu: &mut Cpu, window: &Window) {
     }
 }
 
-fn draw(cpu: &Cpu, fb: &mut Vec<u32>) {
+fn draw(cpu: &Cpu, fb: &mut Vec<u32>, scale: usize, fg: u32, bg: u32 ) {
     for (i, &pixel) in cpu.display.iter().enumerate() {
         let x = i % 64;
         let y = i / 64;
 
-        let colour = if pixel { 0xFFFFFF } else { 0x000000 };
+        let colour = if pixel { fg } else { bg };
 
-        for dy in 0..SCALE {
-            for dx in 0..SCALE {
-                let fx = x * SCALE + dx;
-                let fy = y * SCALE + dy;
-                fb[fy * WIDTH * SCALE + fx] = colour;
+        for dy in 0..scale {
+            for dx in 0..scale {
+                let fx = x * scale + dx;
+                let fy = y * scale + dy;
+                fb[fy * WIDTH * scale + fx] = colour;
             }
         }
     }
